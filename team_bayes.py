@@ -1,14 +1,17 @@
 # To add a new cell, type '# %%'
 # To add a new markdown cell, type '# %% [markdown]'
 # %%
+import os
+import sys
 import numpy as np
 import scipy.stats as sps
 from scipy.ndimage import gaussian_filter
 import pandas as pd
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
-import os
-import sys
+import tensorflow as tf
+import gpflow
+from gpflow.utilities import print_summary, set_trainable
 from netCDF4 import Dataset
 
 sys.path.append(r'C:\Users\chral\Nextcloud\code\HIDA2020\Climate_Model_Data')
@@ -142,7 +145,8 @@ plt.tight_layout()
 
 # %%
 x = np.sqrt(np.concatenate([AOD[AOD>AODmin],AOD[AOD>AODmin]]))
-X = sm.add_constant(x)
+#X = sm.add_constant(x)
+X = x
 y = np.concatenate([np.roll(dT1glob[AOD>AODmin], -1), np.roll(dT2glob[AOD>AODmin], -1)])
 #lam = -1 # Box Cox
 #c = -1
@@ -154,7 +158,8 @@ fit = model.fit()
 print(fit.summary())
 
 xpl = np.sqrt(AOD[AOD>AODmin])
-Xpl = sm.add_constant(xpl)
+Xpl = xpl
+#Xpl = sm.add_constant(xpl)
 ypred = fit.predict(Xpl)
 
 plt.figure(figsize=(3,3))
@@ -176,14 +181,16 @@ print(fit.cov_params())
 # %%
 y = np.sqrt(np.concatenate([AOD[AOD>AODmin],AOD[AOD>AODmin]]))
 x = np.concatenate([np.roll(dT1glob[AOD>AODmin], -1), np.roll(dT2glob[AOD>AODmin], -1)])
-X = sm.add_constant(x)
+X = x
+#X = sm.add_constant(x)
 
 model = sm.OLS(y, X)
 fit = model.fit()
 print(fit.summary())
 
 xpl = np.roll(dTglob, -1)
-Xpl = sm.add_constant(xpl)
+Xpl = xpl
+#Xpl = sm.add_constant(xpl)
 ypred = fit.predict(Xpl)
 
 pred = fit.get_prediction(Xpl)
@@ -263,8 +270,6 @@ ax.plot(t, ypred, '--')
 
 
 # %%
-import gpflow
-from gpflow.utilities import print_summary, set_trainable
 
 # datavar = np.mean(var_dTglob)
 
@@ -307,7 +312,6 @@ plt.plot(xtrain, ytrain-mean0)
 
 
 # %%
-import tensorflow as tf
 # datavar = np.mean(var_dTglob)
 t, lon, lat, T1 = get_geodata(1)
 t = np.arange(len(AOD))
@@ -321,6 +325,7 @@ k = k1 + k2
 #meanf = gpflow.mean_functions.Constant()
 m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))#, mean_function=meanf)
 opt = tf.optimizers.Adam(1.0)
+set_trainable(m.likelihood.variance, False)
 set_trainable(m.kernel.kernels[0].variance, False)
 set_trainable(m.kernel.kernels[1].variance, False)
 #set_trainable(m.likelihood.variance, False)
@@ -345,7 +350,6 @@ plt.fill_between(xpl[:, 0], mean[:, 0] - 1.96 * np.sqrt(var[:,0]), mean[:, 0] + 
 
 
 # %%
-import tensorflow as tf
 # datavar = np.mean(var_dTglob)
 t, lon, lat, T1 = get_geodata(1)
 t = np.arange(len(AOD))
@@ -353,12 +357,13 @@ t = np.arange(len(AOD))
 xtrain = t.reshape([-1,1]).astype(np.float64)
 ytrain = dT1glob.reshape([-1,1]).astype(np.float64)
 
-k = gpflow.kernels.SquaredExponential(variance= 1e2*np.var(ytrain), lengthscales=2 )
+k = gpflow.kernels.SquaredExponential(variance=1e2*np.var(ytrain), lengthscales=10 )
 m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))
 
 opt = gpflow.optimizers.Scipy()
 set_trainable(m.kernel.lengthscales, True)
 set_trainable(m.kernel.variance, False)
+set_trainable(m.likelihood.variance, True)
 
 def objective_closure():
     return - m.log_marginal_likelihood()
@@ -374,6 +379,252 @@ plt.plot(xpl, mean, 'C0', lw=2)
 plt.plot(xtrain, mean0, 'C0', lw=2)
 plt.fill_between(xpl[:, 0], mean[:, 0] - 1.96 * np.sqrt(var[:,0]), mean[:, 0] + 1.96 * np.sqrt(var[:,0]), color='C0', alpha=0.2)
 
+print(m.log_marginal_likelihood())
+
+
+# %%
+
+def volc_influence(volc_strength):
+    #a0 = 0.102
+    #a1 = -1.65
+    a0 = 0.0
+    a1 = -1.3294
+    return a0 + a1*volc_strength
+
+# %%
+t = np.arange(len(AOD))
+xtrain = t.reshape([-1,1]).astype(np.float64)
+ytrain = (dT1glob - volc_influence(np.sqrt(AOD))).reshape([-1,1]).astype(np.float64)
+
+k = gpflow.kernels.SquaredExponential(variance=1e2*np.var(ytrain), lengthscales=10 )
+m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))
+
+opt = gpflow.optimizers.Scipy()
+set_trainable(m.kernel.lengthscales, True)
+set_trainable(m.kernel.variance, False)
+set_trainable(m.likelihood.variance, True)
+
+def objective_closure():
+    return - m.log_marginal_likelihood()
+opt_logs = opt.minimize(objective_closure, m.trainable_variables, options=dict(maxiter=100))
+
+print_summary(m)
+pl = np.linspace(-20, 1020, 1041).reshape([-1, 1]).astype('float64')
+mean, var = m.predict_f(xpl, full_cov=False)
+mean0, var0 = m.predict_f(xtrain, full_cov=False)
+plt.figure(figsize=(12, 6))
+plt.plot(xtrain, ytrain, 'x')
+plt.plot(xpl, mean, 'C0', lw=2)
+plt.plot(xtrain, mean0, 'C0', lw=2)
+plt.fill_between(xpl[:, 0], mean[:, 0] - 1.96 * np.sqrt(var[:,0]), mean[:, 0] + 1.96 * np.sqrt(var[:,0]), color='C0', alpha=0.2)
 
 print(m.log_marginal_likelihood())
 
+# %%
+conla = filter_lat(35, 55)
+conlo = filter_lon(150, 175)
+
+LON, LAT = np.meshgrid(lon[conlo], lat[conla])
+
+plt.figure()
+plt.contourf(LON, LAT, dT1[0,conla,:][:,conlo], levels=50)
+
+xtrain = np.vstack([LON.flatten(), LAT.flatten()]).astype(np.float64).T
+
+print(xtrain.shape)
+
+#%%
+
+th = []
+sig2 = []
+for kt in range(0, 999, 5):
+    ytrain = dT1[kt,conla,:][:,conlo].flatten().reshape([-1,1]).astype(np.float64)
+    k = gpflow.kernels.SquaredExponential(variance=1e2*np.var(ytrain), lengthscales=5 )
+    m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))
+
+
+    opt = gpflow.optimizers.Scipy()
+    set_trainable(m.kernel.lengthscales, True)
+    set_trainable(m.kernel.variance, False)
+    set_trainable(m.likelihood.variance, True)
+
+    def objective_closure():
+        return - m.log_marginal_likelihood()
+    opt_logs = opt.minimize(objective_closure, m.trainable_variables, options=dict(maxiter=100))
+
+    th.append(m.kernel.lengthscales.value())
+    sig2.append(m.likelihood.variance.value())
+    print(kt, th[-1])
+# %%
+plt.figure()
+plt.plot(th)
+plt.plot(AOD[::5]*40)
+
+plt.figure()
+plt.plot(sig2)
+plt.plot(AOD[::5]/5)
+
+#%%
+
+
+# %%
+nth = 10
+nsig2 = 10
+
+thmin = 3
+thmax = 10
+sig2min = 0.001
+sig2max = 0.01
+
+kt = 0
+
+var0 = np.var(dT1[kt,conla,:][:,conlo].flatten())
+
+k = gpflow.kernels.SquaredExponential(variance=1e2*var0, lengthscales=5 )
+
+th = []
+sig2 = []
+for kt in range(0, 999, 2):
+    ytrain = dT1[kt,conla,:][:,conlo].flatten().reshape([-1,1]).astype(np.float64)
+    m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=var0)
+
+    thmean = 0.0
+    sig2mean = 0.0
+    normmean = 0.0
+
+    for thk in np.linspace(thmin, thmax, nth):
+        for sig2k in np.linspace(sig2min, sig2max, nsig2):
+            m.kernel.lengthscales.assign(thk)
+            m.likelihood.variance.assign(sig2k)
+            p = np.exp(m.log_marginal_likelihood())
+            thmean += thk*p
+            sig2mean += sig2k*p
+            normmean += p
+
+    thmean = thmean/normmean
+    sig2mean = sig2mean/normmean
+
+    th.append(thmean)
+    sig2.append(sig2mean)
+    print(kt, th[-1])
+
+
+
+# %%
+plt.figure()
+plt.plot(th)
+
+plt.figure()
+plt.plot(sig2)
+
+
+# %%
+# %%
+conla = filter_lat(35, 70)
+klon = 80
+
+plt.figure()
+plt.plot(lat[conla], T1[0,conla,80])
+
+xtrain = lat[conla].astype(np.float64).reshape([-1,1])
+
+print(xtrain.shape)
+
+#%%
+
+th = []
+sig2 = []
+for kt in range(0, 999, 2):
+    ytrain = dT1[kt,conla,klon].reshape([-1,1]).astype(np.float64)
+    k = gpflow.kernels.SquaredExponential(variance=1e2*np.var(ytrain), lengthscales=10 )
+    m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))
+
+    opt = gpflow.optimizers.Scipy()
+    set_trainable(m.kernel.lengthscales, False)
+    set_trainable(m.kernel.variance, False)
+    set_trainable(m.likelihood.variance, True)
+
+    def objective_closure():
+        return -m.log_marginal_likelihood()
+    opt_logs = opt.minimize(objective_closure, m.trainable_variables, options=dict(maxiter=100))
+
+    th.append(m.kernel.lengthscales.value())
+    sig2.append(m.likelihood.variance.value())
+    print(kt, th[-1])
+# %%
+# plt.figure()
+# plt.plot(th)
+# plt.plot(AOD[::2]*100)
+# plt.ylim([0,60])
+
+plt.figure()
+plt.plot(sig2)
+plt.plot(AOD[::2])
+
+#%%
+
+
+# %%
+nth = 5
+nsig2 = 5
+
+thmin = 3
+thmax = 10
+sig2min = 0.001
+sig2max = 0.01
+
+kt = 0
+
+var0 = np.var(dT1[kt,conla,:][:,conlo].flatten())
+
+k = gpflow.kernels.SquaredExponential(variance=1e2*var0, lengthscales=5 )
+
+th = []
+sig2 = []
+for kt in range(0, 999, 2):
+    ytrain = dT1[kt,conla,klon].reshape([-1,1]).astype(np.float64)
+    m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=var0)
+
+    thmean = 0.0
+    sig2mean = 0.0
+    normmean = 0.0
+
+    for thk in np.linspace(thmin, thmax, nth):
+        for sig2k in np.linspace(sig2min, sig2max, nsig2):
+            m.kernel.lengthscales.assign(thk)
+            m.likelihood.variance.assign(sig2k)
+            p = np.exp(m.log_marginal_likelihood())
+            thmean += thk*p
+            sig2mean += sig2k*p
+            normmean += p
+
+    thmean = thmean/normmean
+    sig2mean = sig2mean/normmean
+
+    th.append(thmean)
+    sig2.append(sig2mean)
+    print(kt, th[-1])
+
+
+
+# %%
+plt.figure()
+plt.plot(th)
+
+plt.figure()
+plt.plot(sig2)
+
+
+# %%
+conla2 = filter_lat(30, 70)
+conlo2 = filter_lon(140, 185)
+
+dTvar = [np.var(dT1[kt,conla2,:][:,conlo2]) for kt in t]
+
+# %%
+
+plt.figure()
+plt.plot(dTvar)
+plt.plot(5*AOD)
+
+# %%
