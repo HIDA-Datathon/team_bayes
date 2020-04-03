@@ -437,7 +437,7 @@ print(xtrain.shape)
 
 th = []
 sig2 = []
-for kt in range(0, 999, 5):
+for kt in range(0, 999, 1):
     ytrain = dT1[kt,conla,:][:,conlo].flatten().reshape([-1,1]).astype(np.float64)
     k = gpflow.kernels.SquaredExponential(variance=1e2*np.var(ytrain), lengthscales=5 )
     m = gpflow.models.GPR(data=(xtrain, ytrain), kernel=k, noise_variance=np.var(ytrain))
@@ -468,13 +468,13 @@ plt.plot(AOD[::5]/5)
 
 
 # %%
-nth = 10
-nsig2 = 10
+nth = 30
+nsig2 = 30
 
 thmin = 3
-thmax = 10
+thmax = 20
 sig2min = 0.001
-sig2max = 0.01
+sig2max = 0.025
 
 kt = 0
 
@@ -492,15 +492,26 @@ for kt in range(0, 999, 2):
     sig2mean = 0.0
     normmean = 0.0
 
+    lik = []
     for thk in np.linspace(thmin, thmax, nth):
         for sig2k in np.linspace(sig2min, sig2max, nsig2):
             m.kernel.lengthscales.assign(thk)
             m.likelihood.variance.assign(sig2k)
-            p = np.exp(m.log_marginal_likelihood())
-            thmean += thk*p
-            sig2mean += sig2k*p
-            normmean += p
+            lik.append(m.log_marginal_likelihood())
 
+    lik = np.array(lik)
+    likmax = np.max(lik)
+
+    lik2 = np.exp(lik - likmax)
+    normmean = np.sum(lik2)
+
+    ind = 0
+    for thk in np.linspace(thmin, thmax, nth):
+        for sig2k in np.linspace(sig2min, sig2max, nsig2):
+            thmean += thk*lik2[ind]
+            sig2mean += sig2k*lik2[ind]
+            ind += 1
+    
     thmean = thmean/normmean
     sig2mean = sig2mean/normmean
 
@@ -512,10 +523,16 @@ for kt in range(0, 999, 2):
 
 # %%
 plt.figure()
-plt.plot(th)
+plt.plot(t[::2], th)
+plt.plot(t, 50*AOD)
+plt.xlabel('Time / years')
+plt.title('Expected length scale')
 
 plt.figure()
-plt.plot(sig2)
+plt.plot(t[::2], sig2)
+plt.plot(t, AOD/50)
+plt.xlabel('Time / years')
+plt.title('Expected noise scale')
 
 
 # %%
